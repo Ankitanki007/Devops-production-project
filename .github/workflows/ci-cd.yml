@@ -1,0 +1,99 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  test:
+    name: ✅ Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Install dependencies
+        run: |
+          cd backend
+          npm install
+
+      - name: Run tests
+        run: |
+          cd backend
+          npm test
+
+  build-and-push:
+    name: 🐳 Build and Push Images
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and Push backend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/backend:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/backend:${{ github.sha }}
+
+      - name: Build and Push frontend image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/frontend:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/frontend:${{ github.sha }}
+
+  update-k8s:
+    name: ☸️ Update Kubernetes Manifests
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Update deployment image tags
+        run: |
+          sed -i "s|image: .*/backend:.*|image: ${{ secrets.DOCKERHUB_USERNAME }}/backend:${{ github.sha }}|" k8s/deployment.yaml
+          sed -i "s|image: .*/frontend:.*|image: ${{ secrets.DOCKERHUB_USERNAME }}/frontend:${{ github.sha }}|" k8s/deployment.yaml
+
+      - name: Commit updated manifests
+        run: |
+          git config --global user.email "ci@github.com"
+          git config --global user.name "CI Bot"
+          git add k8s/deployment.yaml
+          git diff --staged --quiet || git commit -m "ci: update image tags to ${{ github.sha }}"
+          git push
+
+  notify:
+    name: 🔔 Pipeline Summary
+    runs-on: ubuntu-latest
+    needs: update-k8s
+    steps:
+      - name: Print summary
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "✅ Pipeline completed!"
+          echo "📦 Commit: ${{ github.sha }}"
+          echo "👤 By: ${{ github.actor }}"
+          echo "🌿 Branch: ${{ github.ref_name }}"
+          echo "🐳 Backend: ankitdevops02/backend:${{ github.sha }}"
+          echo "🐳 Frontend: ankitdevops02/frontend:${{ github.sha }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
